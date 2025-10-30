@@ -1,0 +1,57 @@
+# Node dependencies
+/node_modules/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
+*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Build output
+/dist/
+/build/
+/.out/
+/release/
+
+# Coverage reports
+coverage/
+.nyc_output/
+
+# Environment variables
+.env
+.env.*.local
+
+# Next.js, Nuxt, Gatsby, etc.
+.next/
+.nuxt/
+.gatsby/
+
+# Parcel, Vite, cache
+.cache/
+.parcel-cache/
+.vite/
+
+# IDE/editor folders
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Misc
+npm-debug.log
+yarn.lock
+.pnp.*
+.claude/
+package-lock.json
