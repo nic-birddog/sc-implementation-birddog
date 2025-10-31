@@ -163,14 +163,81 @@ console.log('========================================\n');
 // Company ID from your account
 const COMPANY_ID = '808410864692330497';
 
+// Filter configuration - customize this to identify YOUR endpoint
+const MY_ENDPOINT_FILTER = {
+  // Option 1: Filter by endpoint ID (if you know your endpoint's ID)
+  endpointId: null,  // e.g., '1113326954838360065'
+
+  // Option 2: Filter by claim code (easier to remember than endpoint ID)
+  claimCode: 'Nq62MPd9',  // Nic 4k Converter claim code
+
+  // Option 3: Filter by video source name pattern
+  videoSourcePattern: null,  // e.g., 'BIRDDOG-05EAD' or regex pattern
+
+  // Option 4: Filter by IP address
+  ipAddress: null,  // e.g., '192.168.1.100'
+
+  // Option 5: Custom filter function (you can implement your own logic)
+  customFilter: null  // function(connection) { return boolean; }
+};
+
+// Helper function to check if a connection is from "my endpoint"
+function isMyEndpointConnection(conn) {
+  // Resolve endpoint ID from claim code if needed
+  let targetEndpointId = MY_ENDPOINT_FILTER.endpointId;
+
+  if (!targetEndpointId && MY_ENDPOINT_FILTER.claimCode) {
+    // Look up endpoint ID by claim code
+    targetEndpointId = endpointLookup.byClaimCode[MY_ENDPOINT_FILTER.claimCode];
+  }
+
+  // Filter by endpoint ID (direct or resolved from claim code)
+  if (targetEndpointId) {
+    if (conn.sourceId === targetEndpointId ||
+        conn.targetId === targetEndpointId) {
+      return true;
+    }
+  }
+
+  // Filter by video source pattern
+  if (MY_ENDPOINT_FILTER.videoSourcePattern && conn.parameters?.videoSources) {
+    const pattern = MY_ENDPOINT_FILTER.videoSourcePattern;
+    const hasMatch = conn.parameters.videoSources.some(source =>
+      typeof pattern === 'string' ? source.includes(pattern) : pattern.test(source)
+    );
+    if (hasMatch) return true;
+  }
+
+  // Filter by IP address
+  if (MY_ENDPOINT_FILTER.ipAddress) {
+    if (conn.sourceIp === MY_ENDPOINT_FILTER.ipAddress ||
+        conn.targetIp === MY_ENDPOINT_FILTER.ipAddress) {
+      return true;
+    }
+  }
+
+  // Custom filter function
+  if (MY_ENDPOINT_FILTER.customFilter && typeof MY_ENDPOINT_FILTER.customFilter === 'function') {
+    return MY_ENDPOINT_FILTER.customFilter(conn);
+  }
+
+  return false;
+}
+
 // Data channel state - stores entities for each channel
 const channelData = {};
+
+// Endpoint lookup - maps claim codes to endpoint IDs
+const endpointLookup = {
+  byClaimCode: {},  // claimCode -> endpointId
+  byId: {}          // endpointId -> endpoint object
+};
 
 // Subscribe to Data Channels - try both formats to see which works
 // Per BDC3 spec: /<entity-type>/<Company ID>
 const CHANNELS_TO_SUBSCRIBE = [
-  `/connections/${COMPANY_ID}`,  // Try with company ID first
-  // `/connections`,  // Fallback: try without company ID if above fails
+  `/endpoints/${COMPANY_ID}`,     // Get endpoints first to resolve claim codes
+  `/connections/${COMPANY_ID}`,   // Then get connections
 ];
 
 // Initialize storage
@@ -198,27 +265,67 @@ console.log(`\nAttempting to connect to ${WEBSOCKET_URL}`);
 const socket = socketClusterClient.create(options);
 
 // Data Channel message handlers (per BDC3 spec)
-function handleInit(channelKey, data) {
-  channelData[channelKey] = data;
-  console.log(`\n✅ [${channelKey}] INIT - Loaded ${data.length} items`);
 
-  // Print all connections data
-  console.log('\n📋 ALL CONNECTIONS:');
-  console.log('='.repeat(80));
-  data.forEach((conn, index) => {
-    console.log(`\n[${index + 1}/${data.length}] Connection ID: ${conn.id}`);
-    console.log(`   Source: ${conn.sourceId || 'N/A'}`);
-    console.log(`   Target: ${conn.targetId || 'N/A'}`);
-    console.log(`   State: ${conn.state} (${conn.isStarted ? 'Started' : 'Not Started'})`);
-    console.log(`   Protocol: ${conn.parameters?.protocol || 'N/A'}`);
-    if (conn.parameters?.videoSources?.length > 0) {
-      console.log(`   Video Sources: ${conn.parameters.videoSources.join(', ')}`);
-    }
-    if (conn.error) {
-      console.log(`   Error: ${conn.error}`);
+// Special handler for endpoints channel - builds lookup tables
+function handleEndpointsInit(channelKey, data) {
+  channelData[channelKey] = data;
+  console.log(`\n✅ [${channelKey}] INIT - Loaded ${data.length} endpoints`);
+
+  // Build lookup tables
+  data.forEach(endpoint => {
+    endpointLookup.byId[endpoint.id] = endpoint;
+    if (endpoint.code) {
+      endpointLookup.byClaimCode[endpoint.code] = endpoint.id;
     }
   });
-  console.log('\n' + '='.repeat(80));
+
+  console.log(`📋 Built endpoint lookup with ${Object.keys(endpointLookup.byClaimCode).length} claim codes`);
+
+  // If we're filtering by claim code, show which endpoint was found
+  if (MY_ENDPOINT_FILTER.claimCode) {
+    const endpointId = endpointLookup.byClaimCode[MY_ENDPOINT_FILTER.claimCode];
+    if (endpointId) {
+      const endpoint = endpointLookup.byId[endpointId];
+      console.log(`\n🎯 Found endpoint for claim code "${MY_ENDPOINT_FILTER.claimCode}":`);
+      console.log(`   ID: ${endpoint.id}`);
+      console.log(`   Name: ${endpoint.name}`);
+      console.log(`   Type: ${endpoint.type}`);
+      console.log(`   Online: ${endpoint.online}`);
+    } else {
+      console.log(`\n⚠️ Claim code "${MY_ENDPOINT_FILTER.claimCode}" not found in endpoints list`);
+    }
+  }
+}
+
+function handleInit(channelKey, data) {
+  channelData[channelKey] = data;
+  console.log(`\n✅ [${channelKey}] INIT - Loaded ${data.length} total items`);
+
+  // Filter MY endpoint connections
+  const myConnections = data.filter(conn => isMyEndpointConnection(conn));
+
+  if (myConnections.length > 0) {
+    console.log(`\n🎯 MY CONNECTIONS (${myConnections.length} found):`);
+    console.log('='.repeat(80));
+
+    myConnections.forEach((conn, index) => {
+      console.log(`\n[${index + 1}/${myConnections.length}] Connection ID: ${conn.id}`);
+      console.log(`   Source: ${conn.sourceId || 'N/A'}`);
+      console.log(`   Target: ${conn.targetId || 'N/A'}`);
+      console.log(`   State: ${conn.state} (${conn.isStarted ? 'Started' : 'Not Started'})`);
+      console.log(`   Protocol: ${conn.parameters?.protocol || 'N/A'}`);
+      if (conn.parameters?.videoSources?.length > 0) {
+        console.log(`   Video Sources: ${conn.parameters.videoSources.join(', ')}`);
+      }
+      if (conn.error) {
+        console.log(`   Error: ${conn.error}`);
+      }
+    });
+    console.log('\n' + '='.repeat(80));
+  } else {
+    console.log('\n⚠️ No connections matching MY_ENDPOINT_FILTER found');
+    console.log('💡 Tip: Update MY_ENDPOINT_FILTER at the top of the file to filter your endpoint');
+  }
 }
 
 function handleAdd(channelKey, item) {
@@ -228,14 +335,24 @@ function handleAdd(channelKey, item) {
   const index = arr.findIndex(el => el.id === item.id);
   if (index === -1) {
     arr.push(item);
-    console.log(`\n➕ [${channelKey}] ADD - New connection: ${item.id}`);
   } else {
     arr[index] = item;
-    console.log(`\n🔄 [${channelKey}] ADD (replace) - Connection: ${item.id}`);
   }
 
-  // Print the added/updated connection
-  console.log('   Details:', JSON.stringify(item, null, 2));
+  // Only log if it's MY connection
+  if (isMyEndpointConnection(item)) {
+    console.log(`\n➕ [MY CONNECTION] ${index === -1 ? 'NEW' : 'UPDATED'} - ID: ${item.id}`);
+    console.log(`   Source: ${item.sourceId || 'N/A'}`);
+    console.log(`   Target: ${item.targetId || 'N/A'}`);
+    console.log(`   State: ${item.state} (${item.isStarted ? 'Started' : 'Not Started'})`);
+    console.log(`   Protocol: ${item.parameters?.protocol || 'N/A'}`);
+    if (item.parameters?.videoSources?.length > 0) {
+      console.log(`   Video Sources: ${item.parameters.videoSources.join(', ')}`);
+    }
+    if (item.error) {
+      console.log(`   Error: ${item.error}`);
+    }
+  }
 }
 
 function handleUpdate(channelKey, {id, data}) {
@@ -244,15 +361,18 @@ function handleUpdate(channelKey, {id, data}) {
 
   const index = arr.findIndex(el => el.id === id);
   if (index === -1) {
-    console.log(`\n⚠️ [${channelKey}] UPDATE - Connection ${id} not found, ignoring`);
     return;
   }
 
   // Shallow merge the changes
   Object.assign(arr[index], data);
-  console.log(`\n🔄 [${channelKey}] UPDATE - Connection: ${id}`);
-  console.log(`   Changed fields:`, Object.keys(data).join(', '));
-  console.log(`   Updated data:`, JSON.stringify(data, null, 2));
+
+  // Only log if it's MY connection
+  if (isMyEndpointConnection(arr[index])) {
+    console.log(`\n🔄 [MY CONNECTION] UPDATE - ID: ${id}`);
+    console.log(`   Changed fields: ${Object.keys(data).join(', ')}`);
+    console.log(`   New values:`, JSON.stringify(data, null, 2));
+  }
 }
 
 function handleDelete(channelKey, id) {
@@ -262,9 +382,14 @@ function handleDelete(channelKey, id) {
   const index = arr.findIndex(el => el.id === id);
   if (index !== -1) {
     const removed = arr[index];
+
+    // Only log if it's MY connection
+    if (isMyEndpointConnection(removed)) {
+      console.log(`\n🗑️ [MY CONNECTION] DELETED - ID: ${id}`);
+      console.log(`   Was: ${removed.sourceId} -> ${removed.targetId} (${removed.state})`);
+    }
+
     arr.splice(index, 1);
-    console.log(`\n🗑️ [${channelKey}] DELETE - Removed connection: ${id}`);
-    console.log(`   Was: ${removed.sourceId} -> ${removed.targetId} (${removed.state})`);
   }
 }
 
@@ -299,7 +424,12 @@ function subscribeToChannels() {
           // Handle message based on type
           switch (msg) {
             case 'init':
-              handleInit(channelKey, data);
+              // Use special handler for endpoints channel
+              if (channelKey.includes('endpoints')) {
+                handleEndpointsInit(channelKey, data);
+              } else {
+                handleInit(channelKey, data);
+              }
               console.log(`\nCurrent count: ${channelData[channelKey].length}`);
               break;
 
