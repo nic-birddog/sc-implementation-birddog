@@ -37,39 +37,6 @@ console.log('========================================\n');
 
 const LOGIN_URL = 'https://connect.birddog.tv/api/login';
 const LOAD_TOKEN_URL = 'https://connect.birddog.tv/api/load-token';
-const API_ENDPOINTS_URL = 'https://connect.birddog.tv/api/endpoints';
-const API_CONNECTIONS_URL = 'https://connect.birddog.tv/api/connections';
-
-// Function to fetch connections from API
-async function fetchConnections(cookies) {
-  console.log('\n📋 Fetching connections from API...');
-
-  try {
-    const connectionsResponse = await fetch(API_CONNECTIONS_URL, {
-      method: 'GET',
-      headers: {
-        'Cookie': cookies,
-        'Content-Type': 'application/json'
-      }
-    });
-
-    if (connectionsResponse.ok) {
-      const connectionsData = await connectionsResponse.json();
-      console.log('✅ Connections fetched successfully!');
-      console.log(`   Found ${Array.isArray(connectionsData) ? connectionsData.length : Object.keys(connectionsData).length} connections`);
-      console.log('\n📊 Full connections data:');
-      console.log(JSON.stringify(connectionsData, null, 2));
-
-      return connectionsData;
-    } else {
-      console.log(`⚠️ Connections fetch failed: ${connectionsResponse.status}`);
-      return null;
-    }
-  } catch (err) {
-    console.error('❌ Failed to fetch connections:', err.message);
-    return null;
-  }
-}
 
 // Function to login and get JWT token using load-token endpoint
 async function loginAndGetToken() {
@@ -109,9 +76,6 @@ async function loginAndGetToken() {
     // Store cookies globally for token refresh
     loginCookies = cookies;
 
-    // Step 1.5: Fetch connections data from API
-    const connectionsData = await fetchConnections(cookies);
-
     // Step 2: Call load-token to get JWT
     console.log('\n🎫 Step 2: Loading JWT token from /api/load-token...');
 
@@ -147,7 +111,7 @@ async function loginAndGetToken() {
     if (token) {
       console.log(`Token preview: ${token.substring(0, 50)}...`);
       console.log(`Token length: ${token.length} characters`);
-      return { token, connections: connectionsData };
+      return token;
     } else {
       console.log('⚠️ Token not found in response');
       console.log('Full response structure:', Object.keys(tokenData));
@@ -188,26 +152,36 @@ async function getFreshToken() {
   }
 }
 
-// Initial login to get connections data and establish session
-const { token: initialToken, connections: initialConnections } = await loginAndGetToken();
+// Login and get JWT token
+const jwtToken = await loginAndGetToken();
 
 console.log('\n========================================');
-console.log('📊 INITIAL CONNECTIONS FROM REST API');
-console.log('========================================');
-if (initialConnections) {
-  console.log(`Total connections: ${Array.isArray(initialConnections) ? initialConnections.length : Object.keys(initialConnections).length}`);
-}
+console.log('🎯 Ready to connect to SocketCluster');
+console.log('📡 Connections will be loaded from WebSocket channel');
 console.log('========================================\n');
 
-const ORG_ID = '808410864692330497';
+// Company ID from your account
+const COMPANY_ID = '808410864692330497';
 
-// Only subscribe to connections channel for now
+// Data channel state - stores entities for each channel
+const channelData = {};
+
+// Subscribe to Data Channels - try both formats to see which works
+// Per BDC3 spec: /<entity-type>/<Company ID>
 const CHANNELS_TO_SUBSCRIBE = [
-  // `/endpoints/${ORG_ID}`,  // Commented out - focusing on connections only
-  `/connections/${ORG_ID}`
+  `/connections/${COMPANY_ID}`,  // Try with company ID first
+  // `/connections`,  // Fallback: try without company ID if above fails
 ];
 
-// Create socket with options
+// Initialize storage
+CHANNELS_TO_SUBSCRIBE.forEach(channel => {
+  const key = channel.replace('/', '').replace(/\//g, '_');
+  channelData[key] = [];
+});
+
+// Create socket with WebSocket URL
+const WEBSOCKET_URL = 'wss://connect.birddog.tv/socketcluster/';
+
 const options = {
   hostname: 'connect.birddog.tv',
   port: 443,
@@ -219,13 +193,84 @@ const options = {
   }
 };
 
-console.log(`\nAttempting to connect to ${options.hostname}...`);
+console.log(`\nAttempting to connect to ${WEBSOCKET_URL}`);
 
 const socket = socketClusterClient.create(options);
 
+// Data Channel message handlers (per BDC3 spec)
+function handleInit(channelKey, data) {
+  channelData[channelKey] = data;
+  console.log(`\n✅ [${channelKey}] INIT - Loaded ${data.length} items`);
+
+  // Print all connections data
+  console.log('\n📋 ALL CONNECTIONS:');
+  console.log('='.repeat(80));
+  data.forEach((conn, index) => {
+    console.log(`\n[${index + 1}/${data.length}] Connection ID: ${conn.id}`);
+    console.log(`   Source: ${conn.sourceId || 'N/A'}`);
+    console.log(`   Target: ${conn.targetId || 'N/A'}`);
+    console.log(`   State: ${conn.state} (${conn.isStarted ? 'Started' : 'Not Started'})`);
+    console.log(`   Protocol: ${conn.parameters?.protocol || 'N/A'}`);
+    if (conn.parameters?.videoSources?.length > 0) {
+      console.log(`   Video Sources: ${conn.parameters.videoSources.join(', ')}`);
+    }
+    if (conn.error) {
+      console.log(`   Error: ${conn.error}`);
+    }
+  });
+  console.log('\n' + '='.repeat(80));
+}
+
+function handleAdd(channelKey, item) {
+  const arr = channelData[channelKey];
+  if (!arr) return;
+
+  const index = arr.findIndex(el => el.id === item.id);
+  if (index === -1) {
+    arr.push(item);
+    console.log(`\n➕ [${channelKey}] ADD - New connection: ${item.id}`);
+  } else {
+    arr[index] = item;
+    console.log(`\n🔄 [${channelKey}] ADD (replace) - Connection: ${item.id}`);
+  }
+
+  // Print the added/updated connection
+  console.log('   Details:', JSON.stringify(item, null, 2));
+}
+
+function handleUpdate(channelKey, {id, data}) {
+  const arr = channelData[channelKey];
+  if (!arr) return;
+
+  const index = arr.findIndex(el => el.id === id);
+  if (index === -1) {
+    console.log(`\n⚠️ [${channelKey}] UPDATE - Connection ${id} not found, ignoring`);
+    return;
+  }
+
+  // Shallow merge the changes
+  Object.assign(arr[index], data);
+  console.log(`\n🔄 [${channelKey}] UPDATE - Connection: ${id}`);
+  console.log(`   Changed fields:`, Object.keys(data).join(', '));
+  console.log(`   Updated data:`, JSON.stringify(data, null, 2));
+}
+
+function handleDelete(channelKey, id) {
+  const arr = channelData[channelKey];
+  if (!arr) return;
+
+  const index = arr.findIndex(el => el.id === id);
+  if (index !== -1) {
+    const removed = arr[index];
+    arr.splice(index, 1);
+    console.log(`\n🗑️ [${channelKey}] DELETE - Removed connection: ${id}`);
+    console.log(`   Was: ${removed.sourceId} -> ${removed.targetId} (${removed.state})`);
+  }
+}
+
 // Function to subscribe to channels (called after authentication)
 function subscribeToChannels() {
-  console.log('\n📡 Subscribing to important channels...');
+  console.log('\n📡 Subscribing to Data Channels...');
 
   CHANNELS_TO_SUBSCRIBE.forEach((channelName) => {
     (async () => {
@@ -233,33 +278,50 @@ function subscribeToChannels() {
         const channel = socket.subscribe(channelName);
         console.log(`\n🔔 Subscribing to ${channelName}`);
 
-        for await (let data of channel) {
-          // Handle connections channel - active connections list
-          if (channelName.includes('/connections/')) {
-            console.log(`\n========================================`);
-            console.log(`🔗 [CONNECTIONS CHANNEL UPDATE]`);
-            console.log(`========================================`);
-            console.log(JSON.stringify(data, null, 2));
+        // Extract channel type: "/connections" -> "connections"
+        const channelType = channelName.replace('/', '');  // Remove leading slash
+        const channelKey = channelType;  // Use simple key like "connections"
 
-            // Parse connection data structure
-            if (data && data.msg) {
-              console.log(`\n📌 Message type: ${data.msg}`);
-            }
+        for await (let message of channel) {
+          console.log(`\n========================================`);
+          console.log(`📨 [${channelType.toUpperCase()}] Message received`);
+          console.log(`========================================`);
 
-            // Check if this is a connection list
-            if (Array.isArray(data)) {
-              console.log(`\n🎯 CONNECTION LIST ARRAY: ${data.length} connections`);
-              data.forEach((conn, index) => {
-                console.log(`   [${index}]:`, conn);
-              });
-            } else if (data && data.connections) {
-              console.log(`\n🎯 CONNECTION LIST OBJECT: ${data.connections.length} connections`);
-              console.log(JSON.stringify(data.connections, null, 2));
-            } else if (data && data.data) {
-              console.log(`\n📦 Data payload:`, JSON.stringify(data.data, null, 2));
-            }
-            console.log(`========================================\n`);
+          // BDC3 Data Channel format: { "msg": <type>, "data": <...> }
+          if (!message || !message.msg) {
+            console.log('⚠️ Invalid message format:', message);
+            continue;
           }
+
+          const { msg, data } = message;
+          console.log(`Message type: ${msg}`);
+
+          // Handle message based on type
+          switch (msg) {
+            case 'init':
+              handleInit(channelKey, data);
+              console.log(`\nCurrent count: ${channelData[channelKey].length}`);
+              break;
+
+            case 'add':
+              handleAdd(channelKey, data);
+              console.log(`\nCurrent count: ${channelData[channelKey].length}`);
+              break;
+
+            case 'update':
+              handleUpdate(channelKey, data);
+              break;
+
+            case 'delete':
+              handleDelete(channelKey, data);
+              console.log(`\nCurrent count: ${channelData[channelKey].length}`);
+              break;
+
+            default:
+              console.log(`⚠️ Unknown message type: ${msg}`);
+          }
+
+          console.log(`========================================\n`);
         }
       } catch (err) {
         console.error(`\n❌ Error on ${channelName}:`, err.message);
