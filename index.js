@@ -227,6 +227,9 @@ function isMyEndpointConnection(conn) {
 // Data channel state - stores entities for each channel
 const channelData = {};
 
+// Track which channels have been initialized to avoid duplicate logging on reconnect
+const channelInitialized = {};
+
 // Endpoint lookup - maps claim codes to endpoint IDs
 const endpointLookup = {
   byClaimCode: {},  // claimCode -> endpointId
@@ -254,10 +257,20 @@ const options = {
   port: 443,
   secure: true,
   path: '/socketcluster/',
+  // Ping/Pong settings to prevent timeout disconnections
+  pingTimeoutDisabled: false,
+  pingInterval: 8000,        // Send ping every 8 seconds
+  pingTimeout: 20000,        // Wait 20 seconds for pong response
+  // Reconnection settings
+  autoReconnect: true,
   autoReconnectOptions: {
-    initialDelay: 1000,
-    maxDelay: 5000,
-  }
+    initialDelay: 2000,
+    randomness: 1000,
+    multiplier: 1.5,
+    maxDelay: 10000,
+  },
+  // Connection timeout
+  connectTimeout: 20000,
 };
 
 console.log(`\nAttempting to connect to ${WEBSOCKET_URL}`);
@@ -269,9 +282,11 @@ const socket = socketClusterClient.create(options);
 // Special handler for endpoints channel - builds lookup tables
 function handleEndpointsInit(channelKey, data) {
   channelData[channelKey] = data;
-  console.log(`\n✅ [${channelKey}] INIT - Loaded ${data.length} endpoints`);
 
-  // Build lookup tables
+  // Check if this is a reconnection (already initialized before)
+  const isReconnect = channelInitialized[channelKey];
+
+  // Always rebuild lookup tables (data might have changed)
   data.forEach(endpoint => {
     endpointLookup.byId[endpoint.id] = endpoint;
     if (endpoint.code) {
@@ -279,6 +294,15 @@ function handleEndpointsInit(channelKey, data) {
     }
   });
 
+  if (isReconnect) {
+    console.log(`\n🔄 [${channelKey}] RECONNECT - Reloaded ${data.length} endpoints (no changes logged)`);
+    return; // Don't log duplicate data on reconnect
+  }
+
+  // Mark as initialized
+  channelInitialized[channelKey] = true;
+
+  console.log(`\n✅ [${channelKey}] INIT - Loaded ${data.length} endpoints`);
   console.log(`📋 Built endpoint lookup with ${Object.keys(endpointLookup.byClaimCode).length} claim codes`);
 
   // If we're filtering by claim code, show which endpoint was found
@@ -299,6 +323,18 @@ function handleEndpointsInit(channelKey, data) {
 
 function handleInit(channelKey, data) {
   channelData[channelKey] = data;
+
+  // Check if this is a reconnection (already initialized before)
+  const isReconnect = channelInitialized[channelKey];
+
+  if (isReconnect) {
+    console.log(`\n🔄 [${channelKey}] RECONNECT - Reloaded ${data.length} items (no changes logged)`);
+    return; // Don't log duplicate data on reconnect
+  }
+
+  // Mark as initialized
+  channelInitialized[channelKey] = true;
+
   console.log(`\n✅ [${channelKey}] INIT - Loaded ${data.length} total items`);
 
   // Filter MY endpoint connections
